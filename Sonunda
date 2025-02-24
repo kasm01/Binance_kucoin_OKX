@@ -1,0 +1,133 @@
+import os
+import logging
+import time
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import threading
+import asyncio
+import websockets
+from kucoin.client import Client as KucoinClient
+from okx.Client import Client as OKXClient
+from google.colab import auth
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# API Anahtarları (Elle ekleyin)
+KUCOIN_API_KEY = "YOUR_KUCOIN_API_KEY"
+KUCOIN_API_SECRET = "YOUR_KUCOIN_API_SECRET"
+OKX_API_KEY = "YOUR_OKX_API_KEY"
+OKX_API_SECRET = "YOUR_OKX_API_SECRET"
+BINANCE_API_KEY = "YOUR_BINANCE_API_KEY"
+BINANCE_API_SECRET = "YOUR_BINANCE_API_SECRET"
+
+# KuCoin ve OKX Bağlantısı
+kucoin_client = KucoinClient(KUCOIN_API_KEY, KUCOIN_API_SECRET)
+okx_client = OKXClient(OKX_API_KEY, OKX_API_SECRET)
+
+# Google Drive Kimlik Doğrulama
+auth.authenticate_user()
+drive_service = build('drive', 'v3')
+
+# Google Drive'a Veri Kaydetme Fonksiyonu
+def save_to_drive(content, filename="trading_data.txt"):
+    filepath = f"/content/{filename}"
+    with open(filepath, "w") as file:
+        file.write(content)
+    file_metadata = {'name': filename, 'parents': ['binance pump']}
+    media = MediaFileUpload(filepath, mimetype='text/plain')
+    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    logging.info(f"📁 {filename} Google Drive'a kaydedildi.")
+
+# AI Modeli (LSTM)
+class LSTMPredictor(nn.Module):
+    def __init__(self, input_size=1, hidden_layer_size=50, output_size=1):
+        super().__init__()
+        self.hidden_layer_size = hidden_layer_size
+        self.lstm = nn.LSTM(input_size, hidden_layer_size, batch_first=True)
+        self.linear = nn.Linear(hidden_layer_size, output_size)
+        self.hidden_cell = (torch.zeros(1, 1, self.hidden_layer_size), torch.zeros(1, 1, self.hidden_layer_size))
+
+    def forward(self, input_seq):
+        lstm_out, self.hidden_cell = self.lstm(input_seq.view(len(input_seq), 1, -1), self.hidden_cell)
+        predictions = self.linear(lstm_out.view(len(input_seq), -1))
+        return predictions[-1]
+
+# AI Modelini Eğitme
+def train_ai_model():
+    data = pd.read_csv("market_data.csv")
+    X = torch.tensor(data['feature'].values, dtype=torch.float32)
+    y = torch.tensor(data['target'].values, dtype=torch.float32)
+
+    model = LSTMPredictor()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    loss_function = nn.MSELoss()
+
+    for epoch in range(10):
+        model.train()
+        optimizer.zero_grad()
+        output = model(X)
+        loss = loss_function(output, y)
+        loss.backward()
+        optimizer.step()
+
+    torch.save(model.state_dict(), "ai_model.pth")
+    save_to_drive("AI Modeli Güncellendi", "ai_model_log.txt")
+    return model
+
+# Haftalık AI Model Güncelleme
+def weekly_model_update():
+    while True:
+        logging.info("📢 Haftalık AI Model Güncellemesi Başlatıldı...")
+        train_ai_model()
+        logging.info("✅ AI Modeli Haftalık Güncellendi!")
+        time.sleep(604800)
+
+# Dinamik Model Güncelleme (PnL & Volatilite Bazlı)
+def dynamic_model_update():
+    while True:
+        pnl = np.random.uniform(-10, 10)
+        volatility = np.random.uniform(0.01, 0.1)
+        if abs(pnl) > 5 or volatility > 0.05:
+            logging.info("📢 Dinamik AI Model Güncellemesi Başlatıldı...")
+            train_ai_model()
+            logging.info("✅ AI Modeli Dinamik Olarak Güncellendi!")
+        time.sleep(3600)
+
+# KuCoin ve OKX'te İşlem Açma
+def place_order(exchange, symbol, side, price, quantity=0.01):
+    if exchange == "kucoin":
+        kucoin_client.create_market_order(symbol, side, size=quantity)
+    elif exchange == "okx":
+        okx_client.create_order(symbol, side, "market", quantity)
+    logging.info(f"✅ {exchange.upper()} {symbol} için {side} işlemi açıldı. Fiyat: {price}")
+
+# WebSocket Bağlantısı Başlatma
+async def websocket_listener(symbol):
+    uri = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@trade"
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                logging.info(f"✅ WebSocket bağlantısı kuruldu: {symbol}")
+                while True:
+                    message = await websocket.recv()
+                    logging.info(f"📡 {symbol} WebSocket verisi alındı.")
+        except Exception as e:
+            logging.error(f"❌ WebSocket bağlantısı kapandı: {e}. 10 saniye sonra tekrar bağlanıyor...")
+            await asyncio.sleep(10)
+
+# Model Güncelleme İşlemlerini Paralel Çalıştırma
+threading.Thread(target=weekly_model_update, daemon=True).start()
+threading.Thread(target=dynamic_model_update, daemon=True).start()
+
+# Ana Çalıştırma
+if __name__ == "__main__":
+    symbols = ["BTCUSDT", "ETHUSDT"]
+    for symbol in symbols:
+        threading.Thread(target=lambda: asyncio.run(websocket_listener(symbol)), daemon=True).start()
+    
+    # Test Emirleri Açma (KuCoin ve OKX)
+    place_order("kucoin", "BTC-USDT", "buy", 50000)
+    place_order("okx", "BTC-USDT", "sell", 50000)
