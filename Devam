@@ -1,0 +1,134 @@
+import os
+import logging
+import time
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import threading
+import requests
+from binance.client import Client
+from binance.enums import ORDER_TYPE_LIMIT, SIDE_BUY, SIDE_SELL
+from etherscan import Etherscan
+from pycoingecko import CoinGeckoAPI
+from web3 import Web3
+
+# 📌 API Anahtarları (Elle ekleyin)
+KUCOIN_API_KEY = "YOUR_KUCOIN_API_KEY"
+KUCOIN_API_SECRET = "YOUR_KUCOIN_API_SECRET"
+OKX_API_KEY = "YOUR_OKX_API_KEY"
+OKX_API_SECRET = "YOUR_OKX_API_SECRET"
+ALCHEMY_API_KEY = "YOUR_ALCHEMY_API_KEY"
+SANTIMENT_API_KEY = "YOUR_SANTIMENT_API_KEY"
+COINGLASS_API_KEY = "YOUR_COINGLASS_API_KEY"
+ETHERSCAN_API_KEY = "YOUR_ETHERSCAN_API_KEY"
+
+# 📌 Blockchain Bağlantısı (Alchemy)
+alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+web3 = Web3(Web3.HTTPProvider(alchemy_url))
+
+# 📌 Cüzdan Takibi (Binance, KuCoin, OKX)
+def get_exchange_wallet_balance(wallet_address):
+    balance = web3.eth.get_balance(wallet_address)
+    return web3.from_wei(balance, "ether")
+
+binance_wallet = "0xBinanceWalletAddress"
+kucoin_wallet = "0xKucoinWalletAddress"
+okx_wallet = "0xOKXWalletAddress"
+
+print(f"Binance ETH: {get_exchange_wallet_balance(binance_wallet)}")
+print(f"KuCoin ETH: {get_exchange_wallet_balance(kucoin_wallet)}")
+print(f"OKX ETH: {get_exchange_wallet_balance(okx_wallet)}")
+
+# 📌 AI Modeli (LSTM)
+class LSTMPredictor(nn.Module):
+    def __init__(self, input_size=1, hidden_layer_size=50, output_size=1):
+        super().__init__()
+        self.hidden_layer_size = hidden_layer_size
+        self.lstm = nn.LSTM(input_size, hidden_layer_size, batch_first=True)
+        self.linear = nn.Linear(hidden_layer_size, output_size)
+
+    def forward(self, input_seq):
+        lstm_out, _ = self.lstm(input_seq)
+        predictions = self.linear(lstm_out[:, -1])
+        return predictions
+
+# 📌 AI Modelini Eğitme
+def train_ai_model():
+    data = pd.read_csv("market_data.csv")
+    X = torch.tensor(data['feature'].values, dtype=torch.float32).unsqueeze(-1)
+    y = torch.tensor(data['target'].values, dtype=torch.float32)
+
+    model = LSTMPredictor()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    loss_function = nn.MSELoss()
+
+    for epoch in range(10):
+        model.train()
+        optimizer.zero_grad()
+        output = model(X)
+        loss = loss_function(output, y)
+        loss.backward()
+        optimizer.step()
+
+    torch.save(model.state_dict(), "ai_model.pth")
+    return model
+
+# 📌 Günlük & Haftalık AI Model Güncelleme
+def weekly_model_update():
+    while True:
+        train_ai_model()
+        time.sleep(604800)  # 7 gün
+
+def dynamic_model_update():
+    while True:
+        pnl = np.random.uniform(-10, 10)
+        volatility = np.random.uniform(0.01, 0.1)
+        if abs(pnl) > 5 or volatility > 0.05:
+            train_ai_model()
+        time.sleep(3600)
+
+# 📌 KuCoin & OKX için İşlem Açma
+def place_order(exchange, symbol, side):
+    price = float(requests.get(f"https://api.{exchange}.com/v1/market/ticker?symbol={symbol}").json()['price'])
+    quantity = 0.01
+    order_data = {"symbol": symbol, "side": side, "type": "LIMIT", "price": price, "size": quantity}
+    print(f"{exchange.upper()} Order: {order_data}")
+
+# 📌 En Yüksek Likiditeli 15 İşlem Çiftini Seçme
+def get_top_trading_pairs(exchange):
+    url = f"https://api.{exchange}.com/v1/market/tickers"
+    data = requests.get(url).json()
+    sorted_data = sorted(data, key=lambda x: float(x["volume"]), reverse=True)[:15]
+    return [pair["symbol"] for pair in sorted_data]
+
+kucoin_pairs = get_top_trading_pairs("kucoin")
+okx_pairs = get_top_trading_pairs("okx")
+
+# 📌 AI Modeli Kullanarak Trade Yapma
+def trade_with_ai():
+    model = train_ai_model()
+    for symbol in kucoin_pairs[:4]:
+        place_order("kucoin", symbol, SIDE_BUY)
+        place_order("kucoin", symbol, SIDE_SELL)
+    for symbol in okx_pairs[:4]:
+        place_order("okx", symbol, SIDE_BUY)
+        place_order("okx", symbol, SIDE_SELL)
+
+# 📌 Telegram Uyarısı (Arka Arkaya 5 Zarar Durumunda)
+def send_telegram_alert(message):
+    telegram_url = f"https://api.telegram.org/botYOUR_TELEGRAM_BOT/sendMessage"
+    params = {"chat_id": "YOUR_TELEGRAM_CHAT_ID", "text": message}
+    requests.get(telegram_url, params=params)
+
+# 📌 Raporları Günlük ve Haftalık Olarak E-Posta ile Gönderme
+def send_email_report():
+    report = "Günlük PnL & Performans Raporu"
+    email_url = "https://api.your_email_service.com/send"
+    requests.post(email_url, data={"to": "kasm920@gmail.com", "subject": "Bot Raporu", "body": report})
+
+# 📌 Paralel İşlemler (Haftalık Güncelleme & Trading)
+threading.Thread(target=weekly_model_update, daemon=True).start()
+threading.Thread(target=dynamic_model_update, daemon=True).start()
+threading.Thread(target=trade_with_ai, daemon=True).start()
